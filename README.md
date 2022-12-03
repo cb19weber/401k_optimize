@@ -24,7 +24,14 @@ So welcome. Welcome to my answer to all of these dilemnas. Simply input which co
 
 ## Analysis and Challenges
 
-### Analysis of Outcomes Based on Project
+### Gathering all of the data
+Let's define in a bit more detail what we're trying to do. What we want is a tool to analyze all of the possible investment options that we might have in our 401k. This immediately presents two issues.
+1. Which mutual funds are we going to analyze?
+2. What metrics are we going to use to analyze performance?
+3. Where do we get the data for each mutual fund so that we can perform analysis?
+4. How do we know we can trust this data and be confident in the outcome of what is essentially a forecast model?
+
+
 
 ### Analysis of Outcomes Based on Challenges and Goals
 
