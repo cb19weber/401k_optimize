@@ -6,6 +6,6 @@ app = Flask(__name__)
 def invest():
     return render_template('invest.html')
 
-@app.route("/401k")
+@app.route("/retirement")
 def o401k():
-    return render_template('401k_optimize.html')
+    return render_template('retirement.html')
