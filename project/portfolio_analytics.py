@@ -1,88 +1,128 @@
-# Import base dependencies
-import pandas as pd
-from pathlib import Path
+'''Functions to analyze stock/investment data'''
 import yfinance as yf
-import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
-
-# Import ML dependencies
-import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from keras.models import Sequential
-from keras.layers import SimpleRNN, Flatten, TimeDistributed, LSTM
-
-# Setup yfinance library
-tick = yf.Ticker("MSFT")
-
-# get all stock info
-msft.info
 
 # get historical market data
-hist = msft.history(period="1mo")
+def get_history(stock_symbol):
+    filter = False
+    if filter:
+        history = stock_symbol.history(period="max")
+        history = history.loc[:'2024-12-13']
+        return history
+    return stock_symbol.history(period="max")
 
-# show meta information about the history (requires history() to be called first)
-msft.history_metadata
+def trend_analysis(stock):
+    # Establish ticker information
+    stock_symbol = yf.Ticker(stock)
 
-# show actions (dividends, splits, capital gains)
-msft.actions
-msft.dividends
-msft.splits
-msft.capital_gains  # only for mutual funds & etfs
+    # Query stock data for each symbol into a dataframe
+    long_trend = get_history(stock_symbol)
 
-# show share count
-msft.get_shares_full(start="2022-01-01", end=None)
+    # Calculate 50 and 200 day moving averages for symbol
+    sma_200 = round(long_trend["Close"][-200:].sum() / 200, ndigits=3)
+    sma_50 = round(long_trend["Close"][-50:].sum() / 50, ndigits=3)
+    sma_20 = round(long_trend["Close"][-20:].sum() / 20, ndigits=3)
+    entry_analysis = long_trend["Low"][-20:]
+    exit_analysis = long_trend["Low"][-20:]
+    entry_point = np.percentile(entry_analysis, 20)
+    exit_point = np.percentile(exit_analysis, 80)
+    signal_20d_low = long_trend["Close"].iloc[-1] <= entry_point
+    signal_20d_high = long_trend["Close"].iloc[-1] >= exit_point
 
-# show financials:
-# - income statement
-msft.income_stmt
-msft.quarterly_income_stmt
-# - balance sheet
-msft.balance_sheet
-msft.quarterly_balance_sheet
-# - cash flow statement
-msft.cashflow
-msft.quarterly_cashflow
-# see `Ticker.get_income_stmt()` for more options
+    # Get currnet market price
+    current_price = round(long_trend["Close"].iloc[-1], ndigits=3)
+    if current_price < sma_50 * 0.95:
+        signal_20d_high = True
 
-# show holders
-msft.major_holders
-msft.institutional_holders
-msft.mutualfund_holders
-msft.insider_transactions
-msft.insider_purchases
-msft.insider_roster_holders
+    if len(long_trend) >= 50:
+        return current_price, sma_200, sma_50, sma_20, entry_point, signal_20d_low, exit_point, signal_20d_high
+    
+def technical_analysis(stock="NVDA", basis=0):
+    # Retrieve all relevant data for investment analysis
+    try:
+        current_price, sma_200, sma_50, sma_20, entry_point, signal_20d_low, exit_point, signal_20d_high = trend_analysis(stock)
+        # Caclulate exit and opportunity ranges
+        death_cross = round(sma_50 - sma_200, ndigits=2) > 0
+        exit_price = round(sma_50 * 0.95, ndigits=2)
+        if exit_point > exit_price:
+            exit_price = round(exit_point, ndigits=2)
+        opportunity = round(sma_200 * 1.03, ndigits=2)
+        if opportunity < entry_point:
+            opportunity = round(entry_point, ndigits=2)
+        
+        desired_growth = 1.147
+        exit_price = round(basis * desired_growth, ndigits=2)
 
-# show recommendations
-msft.recommendations
-msft.recommendations_summary
-msft.upgrades_downgrades
+        return current_price, sma_200, sma_50, sma_20, exit_point, entry_point, signal_20d_low, signal_20d_high
+    except:
+        return 0, 0, 0, 0, 0, 0, 0, 0
+    
+def build_analysis_table(fund_list, analyzed_df):
+    current_prices = []
+    sma_200_list = []
+    sma_50_list = []
+    sma_20_list = []
+    exit_range = []
+    entry_points = []
+    buy_signals = []
 
-# Show future and historic earnings dates, returns at most next 4 quarters and last 8 quarters by default. 
-# Note: If more are needed use msft.get_earnings_dates(limit=XX) with increased limit argument.
-msft.earnings_dates
+    for item in fund_list:
+        if "basis" in item:
+            current_price, sma_200, sma_50, sma_20, exit_price, opportunity, signal_20d_low, signal_20d_high = technical_analysis(item['symbol'], item['basis'])
+        else:
+            current_price, sma_200, sma_50, sma_20, exit_price, opportunity, signal_20d_low, signal_20d_high = technical_analysis(item)
+        current_prices.append(current_price)
+        sma_200_list.append(sma_200)
+        sma_50_list.append(sma_50)
+        sma_20_list.append(sma_20)
+        entry_points.append(round(opportunity, ndigits=2))
+        exit_range.append(round(exit_price, ndigits=2))
+        buy_signals.append(signal_20d_low)
 
-# show ISIN code - *experimental*
-# ISIN = International Securities Identification Number
-msft.isin
+        '''
+        # Evaluate buy and sell opportunities
+        if current_price < exit_price:
+            signal_20d_high = False
+        else:
+            pass
+        if signal_20d_high:
+            exit_range.append(exit_price)
+        else:
+            exit_range.append(np.nan)
+        '''
 
-# show options expirations
-msft.options
+    # Create columns in data frame for analysis
+    analyzed_df["market"] = current_prices
+    analyzed_df["200d MA"] = sma_200_list
+    analyzed_df["50d MA"] = sma_50_list
+    analyzed_df["20d MA"] = sma_20_list
+    analyzed_df["buy"] = entry_points
+    analyzed_df["sell"] = exit_range
 
-# show news
-msft.news
+    # Filter list of opportunities
+    if "basis" not in item:
+        analyzed_df = analyzed_df.loc[analyzed_df["buy_signal"]==True]
+    else:
+        pass
+    
+    '''
+    # Add profit taking analysis if asset is above such value
+    if "basis" in item:
+        analyzed_df["sell"] = exit_range
+    else:
+        pass
 
-# Import base data
+    # Remove unnecessary column
+    analyzed_df.drop(["buy_signal"], axis=1, inplace=True)
+    '''
 
-# Data processing and clearning
-# Must be in numpy array or tf.Dataset object format
+    return analyzed_df
 
-# Feature selection and normalization
-
-# Build model
-
-# Train model
-
-# Evaluate model
-
-# Refine model through hyperparameter tuning
+# Lookup requested stocks, ETFs, or funds
+def one_asset_lookup(*args):
+    dict_key = 'symbol'
+    dict_value = 'basis'
+    dataset = []
+    for symbol in args:
+        dataset.append({dict_key:symbol, dict_value: 1})
+    df = pd.DataFrame(dataset)
+    return build_analysis_table(dataset, df)
