@@ -131,3 +131,11 @@ dmypy.json
 # Config files
 src/portfolio_manager/analytics/config.py
 dev/config.py
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.pyo
+*.pyd
+.DS_Store  # If on macOS
+.env       # For secrets
