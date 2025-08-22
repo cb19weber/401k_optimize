@@ -129,4 +129,5 @@ dmypy.json
 .pyre/
 
 # Config files
-project/config.py
+src/portfolio_manager/analytics/config.py
+dev/config.py
