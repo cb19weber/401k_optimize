@@ -155,20 +155,40 @@ def get_fundamentals(symbol, api_key, current_price):
         print(f"Exception fetching fundamentals for {symbol}: {str(e)}")
         return None
 
-def calculate_vwap(df, days=126):  # ~2 quarters
+def calculate_vwap(df, days=63):  # ~2 quarters
     if 'Volume' not in df.columns:
         print("Missing Volume column in DataFrame")
         return None
     
+    # Calculate VWAPS for designated time period
     vwap_analysis = df[-days:].copy()
     vwap_analysis['Cumulative_LTPV'] = (vwap_analysis['Low'] * vwap_analysis['Volume']).cumsum()
     vwap_analysis['Cumulative_HTPV'] = (vwap_analysis['High'] * vwap_analysis['Volume']).cumsum()
     vwap_analysis['Cumulative_Volume'] = vwap_analysis['Volume'].cumsum()
     vwap_analysis['Entry'] = round(vwap_analysis['Cumulative_LTPV'] / vwap_analysis['Cumulative_Volume'], 2)
     vwap_analysis['Exit'] = round(vwap_analysis['Cumulative_HTPV'] / vwap_analysis['Cumulative_Volume'], 2)
-    return vwap_analysis[-1:].copy()
+    
+    # Calculate 21-day VWAPs
+    vwap_21 = df[-21:].copy()
+    sum_low_vol_21 = (vwap_21['Low'] * vwap_21['Volume']).sum()
+    sum_high_vol_21 = (vwap_21['High'] * vwap_21['Volume']).sum()
+    sum_vol_21 = vwap_21['Volume'].sum()
+    
+    if sum_vol_21 > 0:
+        one_mo_low = round(sum_low_vol_21 / sum_vol_21, 2)
+        one_mo_high = round(sum_high_vol_21 / sum_vol_21, 2)
+    else:
+        one_mo_low = None
+        one_mo_high = None
+    
+    # Return VWAPS with additional 21-day columns
+    result = vwap_analysis[-1:].copy()
+    result['1mo_Low'] = one_mo_low
+    result['1mo_High'] = one_mo_high
+    
+    return result
 
-def build_analysis_table(summary_df, api_key, margin_of_safety, vwap_days, graham_margin):
+def build_analysis_table(summary_df, api_key, margin_of_safety=0.9, vwap_days=63, graham_margin=0.9):
     """
     Builds a portfolio analysis table using financial data from Alpha Vantage API,
     with ticker symbols extracted from the provided summary DataFrame.
@@ -219,7 +239,9 @@ def build_analysis_table(summary_df, api_key, margin_of_safety, vwap_days, graha
         # Extract data
         market_price = round(raw_data['Close'].iloc[-1], 2)  # Use Close for buys
         entry_price = round(vwap_data['Entry'].iloc[0], 2)
+        one_month_low = round(vwap_data['1mo_Low'].iloc[0], 2)
         exit_price = round(vwap_data['Exit'].iloc[0], 2)
+        one_month_high = round(vwap_data['1mo_High'].iloc[0], 2)
         buy_threshold = round(entry_price * margin_of_safety, 2)  # 10% margin
 
         # Graham buy threshold (for stocks only)
@@ -259,33 +281,26 @@ def build_analysis_table(summary_df, api_key, margin_of_safety, vwap_days, graha
         dividend_yield = None if is_etf else fundamentals['dividend_yield']
         
         portfolio.append([
-            symbol, market_price, buy_threshold, graham_buy_threshold, exit_price,
-            pe_ratio, pb_ratio, dividend_yield, decision
+            symbol, market_price, buy_threshold, one_month_low, graham_buy_threshold, exit_price,
+            one_month_high, pe_ratio, pb_ratio, dividend_yield, decision
         ])
 
         # Convert portfolio list to DataFrame with specified column names
-        price_data_df = pd.DataFrame(portfolio, columns=[
-            'TICKER', 'PRICE', 'VWAP_LOW', 'BUY_PRICE', 'SELL_PRICE',
-            'P/E', 'P/B', 'DivYield', 'RATING'
+        portfolio_df = pd.DataFrame(portfolio, columns=[
+            'TICKER', 'PRICE', 'VWAP_LOW', '1mo_Low', 'BUY_PRICE', 'SELL_PRICE',
+            '1mo_High', 'P/E', 'P/B', 'DivYield', 'RATING'
             ])
         
         # Minimal delay for server stability (75 calls/minute = ~0.8 seconds/call)
         time.sleep(0.1)
     
-    return price_data_df
+    return portfolio_df
 
-def build_portfolio_df(summary_df, historical_return, inception_date, api_key, 
-                       margin_of_safety=0.9, vwap_days=63, graham_margin=0.9, 
+def build_portfolio_df(portfolio_df, api_key, historical_alpha, 
+                       historical_return, inception_date, price_limit=False, 
+                       margin_of_safety=.9, vwap_days=63, graham_margin=0.9, 
                        desired_total_exposure=0.9, cash_pos=0,
                        run_date=None):
-    
-    quant_rankings = list(summary_df['QUANT_RATING'])
-    quant_rankings.sort(reverse=True)
-    quant_threshold = quant_rankings[19]
-    summary_df_filtered = summary_df[(summary_df['TOTAL_QUANTITY'] > 0) | 
-                                     (summary_df['QUANT_RATING'] >= quant_threshold)]
-    summary_df_sorted = summary_df_filtered.sort_values(by='QUANT_RATING', 
-                                                        ascending=False).reset_index(drop=True)
 
     if run_date is None:
         run_date = datetime.now().date()
@@ -295,54 +310,86 @@ def build_portfolio_df(summary_df, historical_return, inception_date, api_key,
     price_data = build_analysis_table(portfolio_df, api_key, margin_of_safety, vwap_days, graham_margin)
 
     # Merge portfolio holdings with price data for each position
-    portfolio_df = pd.merge(
-            summary_df_sorted,
+    expanded_portfolio_df = pd.merge(
+            portfolio_df,
             price_data, 
             on='TICKER',
             how='left'
         )
-    portfolio_df.drop(columns=['ticker'], inplace=True) # remove duplicated column
+    
+    # Filter portfolio dataframe for desired allocation
+    if price_limit:
+        expanded_portfolio_df = expanded_portfolio_df[(expanded_portfolio_df['TOTAL_QUANTITY'] > 0) | 
+                                                      (expanded_portfolio_df['PRICE'] <= 100)]
+    else:
+        pass
+    quant_rankings = list(expanded_portfolio_df['QUANT_RATING'])
+    quant_rankings.sort(reverse=True)
+    if price_limit:
+        quant_threshold = quant_rankings[14]
+    else:
+        quant_threshold = quant_rankings[19]
+    portfolio_df_filtered = expanded_portfolio_df[(expanded_portfolio_df['TOTAL_QUANTITY'] > 0) | 
+                                                  (expanded_portfolio_df['QUANT_RATING'] >= quant_threshold)]
+    portfolio_df_sorted = portfolio_df_filtered.sort_values(by='QUANT_RATING', 
+                                                            ascending=False).reset_index(drop=True)
 
     # Calculate total value of each held position
-    portfolio_df['VALUE'] = round(portfolio_df['TOTAL_QUANTITY'] * portfolio_df['price'], ndigits=2)
+    portfolio_df_sorted['VALUE'] = round(portfolio_df_sorted['TOTAL_QUANTITY'] * portfolio_df_sorted['PRICE'], ndigits=2)
 
     # Calculate value of portfolio, portfolio weights, total return and CAGR for each position
-    portfolio_total = portfolio_df['VALUE'].sum() + cash_pos
-    portfolio_df['PW%'] = round(portfolio_df['VALUE'] / portfolio_total * 100, ndigits=2)
-    portfolio_df.loc[portfolio_df['TOTAL_COST'] < 0, 'AVG_PURCHASE_PRICE'] = 0.01
-    portfolio_df['TOTAL_RETURN'] = portfolio_df['VALUE'] - portfolio_df['TOTAL_COST']
-    portfolio_df['ROI'] = round(portfolio_df['TOTAL_RETURN'] / portfolio_df['TOTAL_COST'] * 100, ndigits=4)
+    portfolio_total = portfolio_df_sorted['VALUE'].sum() + cash_pos
+    portfolio_df_sorted['PW%'] = round(portfolio_df_sorted['VALUE'] / portfolio_total * 100, ndigits=2)
+    portfolio_df_sorted.loc[portfolio_df_sorted['TOTAL_COST'] < 0, 'AVG_PURCHASE_PRICE'] = 0.01
+    portfolio_df_sorted['TOTAL_RETURN'] = portfolio_df_sorted['VALUE'] - portfolio_df_sorted['TOTAL_COST']
+    portfolio_df_sorted['ROI'] = round(portfolio_df_sorted['TOTAL_RETURN'] / portfolio_df_sorted['TOTAL_COST'] * 100, ndigits=4)
+    portfolio_df_sorted.loc[portfolio_df_sorted['AVG_PURCHASE_PRICE'] == 0.010, 'ROI'] = float('inf')
 
     # Calculate desired target price to optimize return
     portfolio_days_held = (run_date - inception_date).days
     portfolio_years_held = portfolio_days_held / 360
     portfolio_cagr = (1+historical_return)**(1/portfolio_years_held)-1
     alpha_age = (run_date.date() - pd.to_datetime("07-01-2022", format="%m-%d-%Y").date()).days / 360
-    alpha_return = (1+2.0451)**(1/alpha_age)-1
+    alpha_return = (1+historical_alpha)**(1/alpha_age)-1
     desired_return = min(portfolio_cagr, alpha_return)
-    portfolio_df['YEARS_HELD'] = ((run_date - portfolio_df['WEIGHTED_AVG_PURCHASE_DATE']).dt.days) / 360
-    portfolio_df['TARGET'] = round(portfolio_df['AVG_PURCHASE_PRICE'] * (1+desired_return)**portfolio_df['YEARS_HELD'], ndigits=2)
-    portfolio_df['CAGR'] = round(((1+portfolio_df['ROI']/100) ** (1/portfolio_df['YEARS_HELD']) - 1) * 100, ndigits=2)
+    portfolio_df_sorted['YEARS_HELD'] = ((run_date - portfolio_df_sorted['WEIGHTED_AVG_PURCHASE_DATE']).dt.days) / 360
+    portfolio_df_sorted['TARGET'] = round(portfolio_df_sorted['AVG_PURCHASE_PRICE'] * (1+desired_return)**portfolio_df_sorted['YEARS_HELD'], ndigits=2)
+    portfolio_df_sorted['CAGR'] = round(((1+portfolio_df_sorted['ROI']/100) ** (1/portfolio_df_sorted['YEARS_HELD']) - 1) * 100, ndigits=2)
 
     # Calculate quant-based portfolio allocation and position adjustments to meet desired allocation
     desired_position_size = portfolio_total * desired_total_exposure * (1/20)
-    portfolio_df['DESIRED_POS'] = desired_position_size * portfolio_df['QUANT_RATING'] / 5
-    portfolio_df.loc[portfolio_df['QUANT_RATING'] < quant_threshold, 'DESIRED_POS'] = 0
-    portfolio_df['POS_ADJUSTMENT'] = round((portfolio_df['DESIRED_POS'] - portfolio_df['VALUE']) / portfolio_df['PRICE'], ndigits=0)
+    portfolio_df_sorted['DESIRED_POS'] = desired_position_size * portfolio_df_sorted['QUANT_RATING'] / 5
+    portfolio_df_sorted.loc[portfolio_df_sorted['QUANT_RATING'] < quant_threshold, 'DESIRED_POS'] = 0
+    portfolio_df_sorted['POS_ADJUSTMENT'] = round((portfolio_df_sorted['DESIRED_POS'] - portfolio_df_sorted['VALUE']) / portfolio_df_sorted['PRICE'], ndigits=0)
 
     # Sorta final portfolio table
-    final_portfolio_df = portfolio_df.sort_values(by='PW%', ascending=False).reset_index(drop=True)
+    final_portfolio_df = portfolio_df_sorted.sort_values(by='PW%', ascending=False).reset_index(drop=True)
 
     return final_portfolio_df
 
-def buys_and_sells_tables(final_portfolio_df):
-    actions_df = final_portfolio_df[['TICKER', 'TOTAL_QUANTITY', 'POS_ADJUSTMENT', 'PRICE', 
-                                     'VWAP_LOW', 'BUY_PRICE', 'SELL_PRICE', 'TARGET', 'RATING']].copy()
-    actions_df['ACTION'] = abs(actions_df['POS_ADJUSTMENT'] / actions_df['TOTAL_QUANTITY']) > 0.2
-    buys_df = actions_df[(actions_df['POS_ADJUSTMENT'] > 0) & (actions_df['ACTION'] == True)].copy()
-    sells_df = actions_df[(actions_df['POS_ADJUSTMENT'] < 0) & (actions_df['ACTION'] == True)].copy()
-    buys_columns = ['TICKER', 'POS_ADJUSTMENT', 'PRICE', 'VWAP_LOW', 'BUY_PRICE', 'RATING']
-    sells_columns = ['TICKER', 'POS_ADJUSTMENT', 'PRICE', 'SELL_PRICE', 'TARGET', 'RATING']
+def buys_and_sells_tables(portfolio_df):
+    # Build action table
+    action_columns = ['TICKER', 'QUANT_RATING', 'TOTAL_QUANTITY', 'POS_ADJUSTMENT', 'PRICE', 
+                    'VWAP_LOW', '1mo_Low', 'BUY_PRICE', 'SELL_PRICE', '1mo_High', 'TARGET', 'RATING']
+    portfolio_df['ACTION'] = abs(portfolio_df['POS_ADJUSTMENT'] / portfolio_df['TOTAL_QUANTITY']) > 0.2
+    actions_df = portfolio_df.loc[portfolio_df['ACTION']==True]
+    actions_df = actions_df[action_columns]
+
+    # Retrieve short-term price data
+    actions_df['RANGE'] = actions_df['1mo_High'] - actions_df['1mo_Low']
+    actions_df['VOLATILITY'] = round(actions_df['RANGE'] / actions_df['1mo_Low'], ndigits=4) * 100
+    actions_df = actions_df.sort_values('VOLATILITY', ascending=False, ignore_index=True)
+
+    # Calculate a weighted raiting to prioritize opportunities
+    actions_df['WEIGHTED_RATING'] = actions_df['QUANT_RATING'] * (1+actions_df['VOLATILITY'])
+    actions_df = actions_df.sort_values(by='WEIGHTED_RATING', 
+                                        ascending=False).reset_index(drop=True).copy()
+
+    # Build buy and sell tables
+    buys_df = actions_df.loc[actions_df['POS_ADJUSTMENT'] > 0]
+    sells_df = actions_df.loc[actions_df['POS_ADJUSTMENT'] < 0]
+    buys_columns = ['TICKER', 'POS_ADJUSTMENT', 'PRICE', 'VWAP_LOW', '1mo_Low', 'BUY_PRICE', 'RATING']
+    sells_columns = ['TICKER', 'POS_ADJUSTMENT', 'PRICE', 'SELL_PRICE', '1mo_High', 'TARGET', 'RATING']
     buys_final = buys_df[buys_columns].copy()
     sells_final = sells_df[sells_columns].copy()
 
